@@ -1,0 +1,14 @@
+# The plugin is the root package; site/ is the OTW site it's developed and tested on. The root is
+# listed too, so Changesets, which only counts listed packages, sees the plugin it releases.
+packages:
+  - .
+  - site
+
+onlyBuiltDependencies:
+  - esbuild
+  - sharp
+
+# The CMS's packages are linked as source and checked with this repo's React types: the two
+# checkouts must agree on them, down to the types of CSS.
+overrides:
+  csstype: 3.2.3

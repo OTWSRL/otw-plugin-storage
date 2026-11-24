@@ -1,0 +1,32 @@
+{
+  "name": "storage-site",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The OTW site the Storage plugin is developed and tested on.",
+  "type": "module",
+  "scripts": {
+    "dev": "cms generate && next dev",
+    "build": "cms generate && next build",
+    "start": "next start",
+    "typecheck": "cms generate && next typegen && tsc --noEmit",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.13",
+    "@opentelemetry/api": "~1.9.0",
+    "@otwdesign/admin-ui": "link:../../nextjs-cms/packages/admin-ui",
+    "@otwdesign/next": "link:../../nextjs-cms/packages/next",
+    "@otwdesign/plugin-storage": "workspace:*",
+    "@otwdesign/sdk": "link:../../nextjs-cms/packages/sdk",
+    "drizzle-orm": "link:../../nextjs-cms/packages/core/node_modules/drizzle-orm",
+    "next": "^16.4.3",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@otwdesign/cli": "link:../../nextjs-cms/packages/cli",
+    "@playwright/test": "1.64.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.2.0"
+  }
+}

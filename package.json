@@ -1,0 +1,96 @@
+{
+  "name": "@otwdesign/plugin-storage",
+  "version": "1.0.0",
+  "description": "Object storage for OTW CMS's media library: S3, Cloudflare R2, Supabase Storage, your own S3-compatible server or Vercel Blob, with uploads sent straight from the browser.",
+  "license": "Apache-2.0",
+  "author": "OTW SRL",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/OTWSRL/otw-plugin-storage.git"
+  },
+  "homepage": "https://github.com/OTWSRL/otw-plugin-storage#readme",
+  "bugs": {
+    "url": "https://github.com/OTWSRL/otw-plugin-storage/issues"
+  },
+  "keywords": [
+    "otw-cms-plugin",
+    "otw-cms",
+    "cms",
+    "plugin",
+    "storage",
+    "s3",
+    "r2",
+    "cloudflare-r2",
+    "supabase-storage",
+    "vercel-blob",
+    "minio",
+    "media",
+    "uploads"
+  ],
+  "type": "module",
+  "packageManager": "pnpm@10.5.2",
+  "exports": {
+    ".": "./src/index.tsx",
+    "./admin": "./src/admin.tsx"
+  },
+  "files": [
+    "src",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "dev": "pnpm --filter ./site dev",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "typecheck": "tsc --noEmit -p . && pnpm --filter ./site typecheck",
+    "test": "vitest run",
+    "test:e2e": "pnpm --filter ./site test:e2e",
+    "test:all": "pnpm check && pnpm test:e2e",
+    "check": "pnpm lint && pnpm format:check && pnpm typecheck && pnpm test",
+    "changeset": "changeset",
+    "version-packages": "changeset version && node scripts/sync-plugin-version.mjs",
+    "release": "changeset publish"
+  },
+  "dependencies": {
+    "@vercel/blob": "^2.9.0"
+  },
+  "peerDependencies": {
+    "@otwdesign/admin-ui": "^1.9.0",
+    "@otwdesign/sdk": "^1.9.0",
+    "drizzle-orm": ">=0.45.0",
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@aws-crypto/sha256-js": "^5.2.0",
+    "@changesets/cli": "^3.0.3",
+    "@eslint/js": "^10.0.1",
+    "@next/eslint-plugin-next": "^16.4.3",
+    "@otwdesign/admin-ui": "link:../nextjs-cms/packages/admin-ui",
+    "@otwdesign/core": "link:../nextjs-cms/packages/core",
+    "@otwdesign/sdk": "link:../nextjs-cms/packages/sdk",
+    "@otwdesign/testing": "link:../nextjs-cms/packages/testing",
+    "@smithy/signature-v4": "^5.7.5",
+    "@types/node": "^24.0.0",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.2.0",
+    "drizzle-orm": "link:../nextjs-cms/packages/core/node_modules/drizzle-orm",
+    "eslint": "^10.0.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.13.0",
+    "next": "^16.4.3",
+    "prettier": "^3.9.10",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "sharp": "link:../nextjs-cms/packages/core/node_modules/sharp",
+    "typescript": "~6.0.3",
+    "typescript-eslint": "^8.72.1",
+    "vite": "^8.3.5",
+    "vitest": "^5.0.5"
+  }
+}
