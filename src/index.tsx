@@ -46,23 +46,31 @@ declare module '@otwdesign/sdk' {
     'storage.prefix': string
     /** `aws`, `r2`, `supabase` or `custom`. */
     'storage.s3_service': string
+    /** The bucket's name. */
     'storage.s3_bucket': string
+    /** The bucket's region, such as `eu-west-1`; Cloudflare R2 needs none. */
     'storage.s3_region': string
     /** Cloudflare's account ID, or Supabase's project reference. */
     'storage.s3_account': string
+    /** A custom service's address, such as `https://s3.example.com`, without the bucket. */
     'storage.s3_endpoint': string
+    /** Whether a custom service has the bucket in the path, not in the host name. */
     'storage.s3_path_style': boolean
     /** `check` or `header`: how a custom service is kept from writing over a file. */
     'storage.s3_no_overwrite': string
+    /** The bucket's access key ID, from `STORAGE_S3_ACCESS_KEY_ID` only. */
     'storage.s3_access_key_id': string
+    /** The bucket's secret access key, from `STORAGE_S3_SECRET_ACCESS_KEY` only. */
     'storage.s3_secret_access_key': string
     /** Where the bucket's files are public; empty serves them through the site. */
     'storage.public_url': string
     /** `public` or `private`: how the Vercel Blob store was made. */
     'storage.blob_access': string
+    /** The Vercel Blob store's read-write token, from `BLOB_READ_WRITE_TOKEN` only. */
     'storage.blob_token': string
   }
   interface Capabilities {
+    /** May change the storage's settings, test its connection and copy files to it. */
     'storage.manage': true
   }
   interface Jobs {
@@ -107,7 +115,7 @@ const service = (...services: S3Service[]) =>
 
 export default definePlugin({
   id: 'storage',
-  version: '1.0.0',
+  version: '1.0.1',
   name: 'Storage',
   description:
     'Keeps the media library’s files in object storage: S3, Cloudflare R2, Supabase Storage, a server of your own, or Vercel Blob.',

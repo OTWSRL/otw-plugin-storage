@@ -1,5 +1,11 @@
 # @otwdesign/plugin-storage
 
+## 1.0.1
+
+### Patch Changes
+
+- Every setting and the `storage.manage` capability carry a description, for the CMS's reference.
+
 ## 1.0.0
 
 ### Major Changes
