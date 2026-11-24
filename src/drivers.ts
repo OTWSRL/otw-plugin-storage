@@ -27,6 +27,8 @@ export interface StorageDriver extends RegistryItem {
   publicUrl(key: string): string | null
   /** Whether a browser can send files straight to it. */
   directUploads: boolean
+  /** What an administrator should know about how it's set up, for the Status screen. No I/O. */
+  warnings?(): string[]
   /** Opens it, on first use: where a driver loads what it needs. */
   connect(): Promise<StorageConnection>
 }

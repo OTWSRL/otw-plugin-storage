@@ -87,9 +87,16 @@ export function createCopyService(deps: CopyDependencies): CopyService {
       // Fails here, with what's missing, rather than in a job nobody is watching.
       await deps.connect()
       const { total } = await media.list({ limit: 1 })
-      const [run] = await deps.db().insert(copyRuns).values({ total }).returning()
-      await deps.enqueue(run!.id)
-      return run!
+      // One run at a time, whoever presses the button: the table itself refuses a second.
+      const [run] = await deps
+        .db()
+        .insert(copyRuns)
+        .values({ total })
+        .onConflictDoNothing()
+        .returning()
+      if (!run) return (await latest())!
+      await deps.enqueue(run.id)
+      return run
     },
 
     async cancel() {

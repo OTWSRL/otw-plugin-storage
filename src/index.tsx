@@ -13,7 +13,7 @@ import { chooseDriver, toMediaStorage, type StorageConnection, type StorageDrive
 import { migrations, TABLES } from './migrations'
 import { s3Connection } from './s3'
 import { createUsageCounter, mediaUsage, parseLimit, type CountedUsage } from './usage'
-import { blobDriver } from './vercel-blob'
+import { blobDriver, type BlobSettings } from './vercel-blob'
 
 export type { CheckResult } from './check'
 export type { StorageConnection, StorageDriver } from './drivers'
@@ -22,6 +22,9 @@ export type { MediaUsage } from './usage'
 
 /** Files this large, in bytes, go from the browser straight to storage: under Vercel's 4.5 MB. */
 export const DIRECT_FROM_BYTES = 4 * 1024 * 1024
+
+/** How long a claim on a name stands if the server that made it stops: longer than any upload. */
+const CLAIM_LASTS = sql`interval '10 minutes'`
 
 const CACHE_SECONDS: Readonly<Record<string, number>> = {
   day: 86_400,
@@ -133,7 +136,7 @@ const service = (...services: S3Service[]) =>
 
 export default definePlugin({
   id: 'storage',
-  version: '1.1.0',
+  version: '1.1.1',
   name: 'Storage',
   description:
     'Keeps the media library’s files in object storage: S3, Cloudflare R2, Supabase Storage, a server of your own, or Vercel Blob.',
@@ -204,6 +207,7 @@ export default definePlugin({
       type: 'select',
       label: 'Service',
       default: 'aws',
+      env: 'STORAGE_S3_SERVICE',
       options: [
         { value: 'aws', label: 'Amazon S3' },
         { value: 'r2', label: 'Cloudflare R2' },
@@ -253,6 +257,7 @@ export default definePlugin({
       description:
         'https://s3.example.com/bucket, as MinIO, Garage and most servers have it. Off for https://bucket.s3.example.com.',
       default: true,
+      env: 'STORAGE_S3_PATH_STYLE',
       showWhen: { any: service('custom') },
     },
     'storage.s3_no_overwrite': {
@@ -319,7 +324,9 @@ export default definePlugin({
     cms.auth.capability('storage.manage', { label: 'Manage storage and its settings' })
     const added = cms.registries.define('storage.drivers')
 
-    const s3Settings = (): S3Settings => ({
+    // Everything below is read once, here: a saved setting starts the site's kernel afresh, so
+    // what pages ask for on every file (its address) is worked out once, not per file.
+    const s3Settings: S3Settings = {
       service: (setting('storage.s3_service') ?? 'aws') as S3Service,
       bucket: (setting('storage.s3_bucket') ?? '').trim(),
       region: (setting('storage.s3_region') ?? '').trim(),
@@ -332,54 +339,85 @@ export default definePlugin({
       accessKeyId: setting('storage.s3_access_key_id')?.trim() || undefined,
       secretAccessKey: setting('storage.s3_secret_access_key')?.trim() || undefined,
       cacheControl: cacheControlFor(setting('storage.cache')),
-    })
+      allowPrivate: ['1', 'true'].includes(env.STORAGE_ALLOW_PRIVATE_ENDPOINT ?? ''),
+    }
+    const bucket = s3Config(s3Settings)
 
-    /** One upload of a name at a time, on every server: a lock the database holds. */
-    const lock = <T,>(key: string, fn: () => Promise<T>) =>
-      cms.transaction(async () => {
-        await cms.db.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${key}, 0))`)
-        return fn()
-      })
+    /**
+     * One upload of a name at a time, on every server, for services that don't refuse a second
+     * write themselves. A claim is a row, not a lock: no database connection is held while the
+     * file is sent. One left by a server that stopped runs out, and is taken over.
+     */
+    const claim = async (key: string, write: () => Promise<boolean>): Promise<boolean> => {
+      const taken = (await cms.db.execute(sql`
+        INSERT INTO storage_claims (key, expires_at)
+        VALUES (${key}, now() + ${CLAIM_LASTS})
+        ON CONFLICT (key) DO UPDATE SET expires_at = excluded.expires_at
+          WHERE storage_claims.expires_at < now()
+        RETURNING key
+      `)) as unknown as { rows: unknown[] }
+      // Being written by another upload this moment: the name is taken.
+      if (taken.rows.length === 0) return false
+      try {
+        return await write()
+      } finally {
+        await cms.db.execute(
+          sql`DELETE FROM storage_claims WHERE key = ${key} OR expires_at < now() - ${CLAIM_LASTS}`,
+        )
+      }
+    }
 
     const s3: StorageDriver = {
       id: 's3',
       label: 'S3',
       directUploads: true,
-      problem() {
-        const config = s3Config(s3Settings())
-        return typeof config === 'string' ? config : null
+      problem: () => (typeof bucket === 'string' ? bucket : null),
+      warnings() {
+        if (typeof bucket === 'string') return []
+        const plain = (address: string | null) => address?.startsWith('http://') ?? false
+        return [
+          ...(plain(bucket.base)
+            ? [
+                'The storage’s address is plain http: files, and the requests that sign for them, cross the network unencrypted. Use https outside a private network.',
+              ]
+            : []),
+          ...(plain(bucket.publicUrl)
+            ? ['The public address is plain http: visitors get files unencrypted.']
+            : []),
+        ]
       },
-      publicUrl(key) {
-        const config = s3Config(s3Settings())
-        return typeof config === 'string' || !config.publicUrl
+      publicUrl: (key) =>
+        typeof bucket === 'string' || !bucket.publicUrl
           ? null
-          : `${config.publicUrl}/${config.prefix}${key}`
-      },
+          : `${bucket.publicUrl}/${bucket.prefix}${key}`,
       async connect(): Promise<StorageConnection> {
-        const config = s3Config(s3Settings())
-        if (typeof config === 'string') throw new Error(config)
-        return s3Connection(config, { fetch, lock })
+        if (typeof bucket === 'string') throw new Error(bucket)
+        return s3Connection(bucket, { fetch, claim })
       },
     }
-    const blob = blobDriver(() => ({
+    const blobSettings: BlobSettings = {
       access: setting('storage.blob_access') === 'private' ? 'private' : 'public',
       token: setting('storage.blob_token')?.trim() || undefined,
       storeId: env.BLOB_STORE_ID?.trim() || undefined,
       oidc: Boolean(env.VERCEL_OIDC_TOKEN),
       prefix: setting('storage.prefix') ?? '',
       cacheSeconds: CACHE_SECONDS[setting('storage.cache') ?? 'day'] ?? CACHE_SECONDS.day!,
-    }))
+    }
+    const blob = blobDriver(() => blobSettings)
     const builtIn = { [s3.id]: s3, [blob.id]: blob }
 
-    const driver = () => chooseDriver(setting('storage.driver') ?? 's3', builtIn, added.list())
-    const active = () => setting('storage.active') === true
-    const directFrom = (): number | null => {
-      const choice = setting('storage.direct_uploads') ?? 'large'
-      return choice === 'off' ? null : choice === 'always' ? 0 : DIRECT_FROM_BYTES
-    }
+    const choice = setting('storage.driver') ?? 's3'
+    const isActive = setting('storage.active') === true
+    const directChoice = setting('storage.direct_uploads') ?? 'large'
+    const minBytes =
+      directChoice === 'off' ? null : directChoice === 'always' ? 0 : DIRECT_FROM_BYTES
+    // A driver another plugin adds is only there once that plugin has set up: looked up when asked.
+    const driver = () => chooseDriver(choice, builtIn, added.list())
+    const active = () => isActive
+    const directFrom = () => minBytes
 
     // Off, nothing is provided: uploads stay on the disk, on the paths they always took.
-    if (active()) cms.media.storage(toMediaStorage(driver, { minBytes: directFrom }))
+    if (isActive) cms.media.storage(toMediaStorage(driver, { minBytes: directFrom }))
 
     const connect = async () => {
       const chosen = driver()

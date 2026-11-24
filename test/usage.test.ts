@@ -77,6 +77,17 @@ describe('the space the media library uses', () => {
     })
   })
 
+  it('counts a size that isn’t a number as nothing, where the page would fail', async () => {
+    const { kernel } = await bootStorage()
+    await kernel.db.execute(`
+      INSERT INTO cms_media (file, filename, mime_type, size, sizes) VALUES (
+        '2026/11/b.jpg', 'b.jpg', 'image/jpeg', 1000,
+        '{"thumbnail": {"file": "2026/11/b-150x150.jpg", "size": "lots"},
+          "medium": {"file": "2026/11/b-300x200.jpg"}}'
+      )`)
+    expect(await mediaUsage(kernel.db)).toMatchObject({ items: 1, files: 3, bytes: 1000 })
+  })
+
   it('says how many untouched originals it can’t count', async () => {
     const { kernel } = await bootStorage({ settings: inBucket(), env: bucketEnv })
     // Over 2560 pixels: kept as a scaled copy, with the original beside it.

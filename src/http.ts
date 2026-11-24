@@ -43,10 +43,37 @@ function codeFor(status: number): StorageError['code'] {
   return 'rejected'
 }
 
+/** How long reading a small answer's body may take. */
+const SMALL_BODY_TIMEOUT_MS = 10_000
+
+/**
+ * The start of a body as text, at most `maxBytes` of it, and never for longer than ten seconds:
+ * an answer that goes on for ever is cut off, not read.
+ */
+export async function readCapped(response: Response, maxBytes: number): Promise<string> {
+  const reader = response.body?.getReader()
+  if (!reader) return ''
+  const chunks: Uint8Array[] = []
+  let read = 0
+  const timer = setTimeout(() => void reader.cancel().catch(() => {}), SMALL_BODY_TIMEOUT_MS)
+  try {
+    while (read < maxBytes) {
+      const { done, value } = await reader.read()
+      if (done) break
+      chunks.push(value.subarray(0, maxBytes - read))
+      read += value.byteLength
+    }
+  } finally {
+    clearTimeout(timer)
+    await reader.cancel().catch(() => {})
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks))
+}
+
 /** The `<Code>` of an S3 error document: a word such as `AccessDenied`, or nothing. */
 export async function errorCodeOf(response: Response): Promise<string | null> {
   try {
-    const text = (await response.text()).slice(0, ERROR_BODY_BYTES)
+    const text = await readCapped(response, ERROR_BODY_BYTES)
     const code = /<Code>([A-Za-z0-9._-]{1,80})<\/Code>/.exec(text)?.[1]
     return code ?? null
   } catch {

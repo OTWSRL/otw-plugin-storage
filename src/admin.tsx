@@ -65,12 +65,13 @@ export default defineAdmin(storage, (cms) => {
   const chosen = () => {
     const found = driver()
     return typeof found === 'string'
-      ? { label: null, problem: found, direct: false, publicUrl: null }
+      ? { label: null, problem: found, direct: false, publicUrl: null, warnings: [] }
       : {
           label: found.label,
           problem: found.problem(),
           direct: found.directUploads,
           publicUrl: found.publicUrl('…'),
+          warnings: found.warnings?.() ?? [],
         }
   }
 
@@ -114,6 +115,11 @@ export default defineAdmin(storage, (cms) => {
             </p>
           </Notice>
         )}
+        {state.warnings.map((warning) => (
+          <Notice key={warning} type="warning">
+            <p>{warning}</p>
+          </Notice>
+        ))}
         <p>
           Where the media library keeps its files. <a href={cms.admin.url('/settings')}>Settings</a>
         </p>

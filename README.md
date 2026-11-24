@@ -39,15 +39,22 @@ Until step 4 the plugin changes nothing: uploads stay on the disk, on the paths 
 | Vercel Blob      | public or private, as the store was made    | the store refuses                              |
 
 Two uploads of `photo.jpg` must become `photo.jpg` and `photo-1.jpg`, never one file. Where a
-service doesn't refuse a second write itself, the plugin looks first, holding a lock in the
-site's database (`pg_advisory_xact_lock`) so two servers can't both find the name free. The
-connection test says whether a service refuses.
+service doesn't refuse a second write itself, the plugin looks first, after claiming the name in
+the site's database so two servers can't both find it free. The claim is a row, not a lock: no
+database connection is held while a file is sent. The connection test says whether a service
+refuses.
 
 ### The keys may need
 
 For S3: `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject` on the bucket's objects, and
 `s3:ListBucket` on the bucket, without which a missing file looks forbidden (403) instead of
 missing (404).
+
+**Give the keys this bucket only**, and this folder only if the bucket is shared
+(`arn:aws:s3:::bucket/folder/*`). Whoever may change Storage's settings chooses the bucket and
+folder the keys are used on, and the site serves `/uploads/<path>` for any file under that
+folder, in the library or not. So use a bucket of its own, or a **Folder**, and never one that
+also holds backups or private files.
 
 ### Uploads from the browser (CORS)
 
@@ -65,10 +72,19 @@ site signs for that one file, for fifteen minutes. The bucket must allow the sit
 ]
 ```
 
-The file waits under `_uploads/` as plain bytes, which nothing serves. The site then reads it
-back, checks its type from its bytes, makes an image's sizes, stores it under its own name and
-deletes the one that waited. A waiting file that's never finished is deleted when it runs out;
-a lifecycle rule that expires `_uploads/` after a day is a good second net.
+The file waits under `_uploads/` as plain bytes (`application/octet-stream`), which the site
+never serves. The site then reads it back, checks its type from its bytes, makes an image's
+sizes, stores it under its own name and deletes the one that waited. A waiting file that's never
+finished, given up or refused is deleted when its upload runs out, an hour to a day later.
+
+Two things to set on the bucket itself:
+
+- **A lifecycle rule that expires `_uploads/` after a day**: the net under anything that arrives
+  after the site stopped looking.
+- **On a public bucket, no public read of `_uploads/`**: until it's stored or swept, a waiting
+  file sits at the bucket's own address, unchecked. It can only be downloaded, never shown as a
+  page, and only the person uploading knows its address; a policy that denies public `GetObject`
+  on `<folder>/_uploads/*` closes it.
 
 Without CORS rules, set **Uploads from the browser** to "Every file goes through the site":
 uploads then work up to the host's limit on a request.
@@ -95,25 +111,30 @@ plan's real quota is in the provider's own console.
 ### A server of your own, or a PC
 
 Run something that speaks S3 on it (MinIO, Garage, or `rclone serve s3` over a folder), choose
-"Another, or a server of your own", and enter its address. It must be reachable from the site,
+"Another, or a server of your own", and enter its address. An address on the server's own
+network (`localhost`, `10.…`, `192.168.…`) is refused unless the site's environment has
+`STORAGE_ALLOW_PRIVATE_ENDPOINT=1`: a setting typed in the admin must not be able to make the
+site talk to services inside its network. A cloud's metadata address is refused always. Use
+https outside a private network; the Status screen says when an address is plain http. It must be reachable from the site,
 and from browsers too for uploads over the host's limit, and it must stay on: when it's off,
 the site's images are too. A PC that sleeps is better as a copy of a bucket (`rclone sync`) than
 as the storage.
 
 ## Environment variables
 
-| Variable                                                                              | For                                                                    |
-| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `STORAGE_S3_ACCESS_KEY_ID`                                                            | The bucket's access key ID. Required for S3.                           |
-| `STORAGE_S3_SECRET_ACCESS_KEY`                                                        | Its secret. Required for S3.                                           |
-| `BLOB_READ_WRITE_TOKEN`                                                               | Vercel Blob's token; Vercel sets it when a store is connected.         |
-| `BLOB_STORE_ID`                                                                       | The Blob store's id, with Vercel's OIDC sign-in instead of a token.    |
-| `VERCEL_OIDC_TOKEN`                                                                   | Set by Vercel; with `BLOB_STORE_ID`, signs in to Blob without a token. |
-| `STORAGE_ACTIVE`                                                                      | `true` or `false`: overrides "Keep uploads in this storage".           |
-| `STORAGE_DRIVER`                                                                      | `s3`, `vercel-blob` or `plugin`: overrides the choice.                 |
-| `STORAGE_S3_BUCKET`, `STORAGE_S3_REGION`, `STORAGE_S3_ACCOUNT`, `STORAGE_S3_ENDPOINT` | Override the bucket's settings.                                        |
-| `STORAGE_PUBLIC_URL`                                                                  | Overrides the public address.                                          |
-| `STORAGE_PREFIX`                                                                      | Overrides the folder inside the bucket.                                |
+| Variable                                                                                                                             | For                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| `STORAGE_S3_ACCESS_KEY_ID`                                                                                                           | The bucket's access key ID. Required for S3.                               |
+| `STORAGE_S3_SECRET_ACCESS_KEY`                                                                                                       | Its secret. Required for S3.                                               |
+| `BLOB_READ_WRITE_TOKEN`                                                                                                              | Vercel Blob's token; Vercel sets it when a store is connected.             |
+| `BLOB_STORE_ID`                                                                                                                      | The Blob store's id, with Vercel's OIDC sign-in instead of a token.        |
+| `VERCEL_OIDC_TOKEN`                                                                                                                  | Set by Vercel; with `BLOB_STORE_ID`, signs in to Blob without a token.     |
+| `STORAGE_ALLOW_PRIVATE_ENDPOINT`                                                                                                     | `1` to let the storage's address be on the server's own network.           |
+| `STORAGE_ACTIVE`                                                                                                                     | `true` or `false`: overrides "Keep uploads in this storage".               |
+| `STORAGE_DRIVER`                                                                                                                     | `s3`, `vercel-blob` or `plugin`: overrides the choice.                     |
+| `STORAGE_S3_SERVICE`, `STORAGE_S3_BUCKET`, `STORAGE_S3_REGION`, `STORAGE_S3_ACCOUNT`, `STORAGE_S3_ENDPOINT`, `STORAGE_S3_PATH_STYLE` | Override the bucket's settings. Set, they can't be changed from the admin. |
+| `STORAGE_PUBLIC_URL`                                                                                                                 | Overrides the public address.                                              |
+| `STORAGE_PREFIX`                                                                                                                     | Overrides the folder inside the bucket.                                    |
 
 A setting with its variable set shows read-only in the admin. The two keys and the token are
 read from the environment only.
@@ -146,10 +167,14 @@ await cms.services.get('storage').usage() // { items, files, bytes, limitBytes, 
 - Copying runs where the files are. Run it on the old server (or locally, against the site's
   database) before moving to a host without a disk.
 - Vercel Blob can't set whether a file shows or downloads; S3 services get that from its type.
+  From a bucket's own address only pictures, audio, video, PDFs and plain text show in the
+  browser; anything that could carry a script downloads.
+- An address is checked by its name. A host name that resolves to a private address isn't
+  caught: keep `storage.manage` to people you'd trust with that.
 
 ## Deleting its data
 
-**Plugins › Storage › Delete Data** drops its one table (`storage_copy_runs`). Files in the
+**Plugins › Storage › Delete Data** drops its two tables (`storage_copy_runs`, `storage_claims`). Files in the
 bucket are not touched.
 
 ## Developing

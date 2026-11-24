@@ -29,6 +29,11 @@ export interface S3Settings {
   secretAccessKey: string | undefined
   /** `Cache-Control` for stored files. */
   cacheControl: string
+  /**
+   * Whether addresses on the server's own network are taken: `STORAGE_ALLOW_PRIVATE_ENDPOINT`,
+   * which only whoever runs the server can set.
+   */
+  allowPrivate: boolean
 }
 
 /** A bucket ready to be talked to: every address worked out, every input checked. */
@@ -56,6 +61,65 @@ export function cleanPrefix(value: string): string | null {
     return null
   }
   return segments.length > 0 ? `${segments.join('/')}/` : ''
+}
+
+/** Where a cloud server answers questions about itself, keys included: never a storage service. */
+const METADATA_HOSTS: ReadonlySet<string> = new Set([
+  'metadata.google.internal',
+  'metadata.goog',
+  '100.100.100.200',
+  '[fd00:ec2::254]',
+])
+
+/** The four numbers of an IPv4 address, also when written inside an IPv6 one; else `null`. */
+function ipv4Of(hostname: string): number[] | null {
+  const dotted = /^(?:\[::ffff:)?(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})\]?$/i.exec(hostname)
+  if (dotted) return dotted.slice(1).map(Number)
+  // `[::ffff:7f00:1]`: the same address, as URL parsing writes it.
+  const mapped = /^\[::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})\]$/i.exec(hostname)
+  if (!mapped) return null
+  const high = parseInt(mapped[1]!, 16)
+  const low = parseInt(mapped[2]!, 16)
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff]
+}
+
+/**
+ * What kind of place a host name points at, from the name alone: `metadata` for a cloud's own
+ * answering service and link-local addresses, `private` for this machine and private networks,
+ * `public` otherwise. A name that only resolves to a private address isn't caught here.
+ */
+export function hostKind(hostname: string): 'public' | 'private' | 'metadata' {
+  const host = hostname.toLowerCase().replace(/\.$/, '')
+  if (METADATA_HOSTS.has(host)) return 'metadata'
+  const ip = ipv4Of(host)
+  if (ip) {
+    const [a, b] = ip as [number, number, number, number]
+    if (a === 169 && b === 254) return 'metadata'
+    const isPrivate =
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127)
+    return isPrivate ? 'private' : 'public'
+  }
+  if (host.startsWith('[')) {
+    const address = host.slice(1, -1)
+    if (/^fe[89ab]/.test(address)) return 'metadata'
+    return address === '::1' || address === '::' || /^f[cd]/.test(address) ? 'private' : 'public'
+  }
+  return host === 'localhost' || host.endsWith('.localhost') ? 'private' : 'public'
+}
+
+/** Why an address can't be used, in a sentence, or `null`. */
+export function hostProblem(url: string, allowPrivate: boolean): string | null {
+  const kind = hostKind(new URL(url).hostname)
+  if (kind === 'metadata') return 'That address isn’t a storage service’s.'
+  if (kind === 'private' && !allowPrivate) {
+    return 'That address is on the server’s own network. To use a storage there, set STORAGE_ALLOW_PRIVATE_ENDPOINT=1 in the site’s environment.'
+  }
+  return null
 }
 
 /** An address on the web without a query, sign-in or fragment, and no trailing slash; or `null`. */
@@ -97,6 +161,8 @@ function endpointOf(settings: S3Settings): { endpoint: string; pathStyle: boolea
       // A server of one's own may be on a private network without a certificate.
       const endpoint = cleanUrl(settings.endpoint, { http: true })
       if (!endpoint) return 'Enter the service’s address, such as https://s3.example.com.'
+      const refused = hostProblem(endpoint, settings.allowPrivate)
+      if (refused) return refused
       if (!REGION.test(settings.region)) return 'Enter a region; many servers take us-east-1.'
       return { endpoint, pathStyle: settings.pathStyle }
     }
@@ -120,6 +186,8 @@ export function s3Config(settings: S3Settings): S3Config | string {
   if (settings.publicUrl.trim() && !publicUrl) {
     return 'The public address must be a web address, such as https://media.example.com.'
   }
+  const refused = publicUrl ? hostProblem(publicUrl, settings.allowPrivate) : null
+  if (refused) return `The public address can’t be used. ${refused}`
   const endpoint = new URL(where.endpoint)
   const base = where.pathStyle
     ? `${where.endpoint}/${settings.bucket}`
@@ -143,8 +211,23 @@ export function s3Config(settings: S3Settings): S3Config | string {
   }
 }
 
-/** What a browser may show in the page; anything else downloads. The CMS's own rule. */
-const INLINE = /^(image|audio|video|text)\/|^application\/pdf$/
+/**
+ * What a browser may show in the page; anything else downloads. Narrower than the CMS's own rule
+ * for files it serves itself: a bucket's address can't add the sandbox the site does, so nothing
+ * that could carry a script (SVG, HTML, XML) is ever shown from there.
+ */
+const INLINE =
+  /^image\/(jpeg|png|gif|webp|avif)$|^(audio|video)\/|^application\/pdf$|^text\/(plain|csv)$/
+
+/** A key the CMS could have made: the rule its own disk storage holds every key to. */
+const KEY_SEGMENT = /^[a-z0-9_-][a-z0-9._-]*$/i
+const MAX_KEY = 512
+
+/** Whether `key` is safe to put in an address: no `..`, no query, no encoding, nothing hidden. */
+export function isSafeKey(key: string): boolean {
+  if (key.length === 0 || key.length > MAX_KEY) return false
+  return key.split('/').every((segment) => KEY_SEGMENT.test(segment) && !segment.includes('..'))
+}
 
 /** `Content-Disposition` for a stored file, from its type. */
 export function dispositionFor(contentType: string): 'inline' | 'attachment' {

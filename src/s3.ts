@@ -1,5 +1,5 @@
 import type { StoredFile } from '@otwdesign/sdk'
-import { dispositionFor, type S3Config } from './config'
+import { dispositionFor, isSafeKey, type S3Config } from './config'
 import type { StorageConnection } from './drivers'
 import { refusal, request, SEND_TIMEOUT_MS, StorageError, type Fetch } from './http'
 import { presignUrl, sha256Hex, signHeaders } from './sigv4'
@@ -14,17 +14,23 @@ const CONFLICT_TRIES = 3
 export interface S3Dependencies {
   fetch: Fetch
   /**
-   * Runs `fn` while nothing else, on this server or another, runs under the same key: what
-   * keeps two uploads of one name apart on services that don't themselves.
+   * Runs `write` unless another upload, on this server or any other, is writing the same key
+   * this moment: then it answers `false`, as for a name that's taken. What keeps two uploads of
+   * one name apart on services that don't themselves.
    */
-  lock<T>(key: string, fn: () => Promise<T>): Promise<T>
+  claim(key: string, write: () => Promise<boolean>): Promise<boolean>
   now?: () => Date
 }
 
 /** A bucket on S3 or a service that speaks its protocol, over plain `fetch`. */
 export function s3Connection(config: S3Config, deps: S3Dependencies): StorageConnection {
   const now = deps.now ?? (() => new Date())
-  const objectUrl = (key: string) => new URL(`${config.base}/${config.prefix}${key}`)
+  const objectUrl = (key: string) => {
+    // The CMS only makes safe keys; one from elsewhere (an imported library) could climb out of
+    // the folder or the bucket once it's part of an address.
+    if (!isSafeKey(key)) throw new StorageError('rejected', 'That file’s name can’t be stored.')
+    return new URL(`${config.base}/${config.prefix}${key}`)
+  }
 
   const send = async (
     method: string,
@@ -100,7 +106,7 @@ export function s3Connection(config: S3Config, deps: S3Dependencies): StorageCon
 
     create(key, data, contentType) {
       if (config.noOverwrite === 'header') return put(key, data, contentType, true)
-      return deps.lock(`${config.base}/${config.prefix}${key}`, async () => {
+      return deps.claim(objectUrl(key).href, async () => {
         if (await stat(key)) return false
         return put(key, data, contentType, false)
       })

@@ -31,7 +31,11 @@ export const bucketSettings = (s3: FakeS3) => ({
   'storage.s3_path_style': true,
 })
 
+/** The server's own word that a storage on its own network is meant: the stand-in is. */
+export const privateEnv = { STORAGE_ALLOW_PRIVATE_ENDPOINT: '1' }
+
 export const bucketEnv = {
+  ...privateEnv,
   STORAGE_S3_ACCESS_KEY_ID: KEYS.accessKeyId,
   STORAGE_S3_SECRET_ACCESS_KEY: KEYS.secretAccessKey,
 }

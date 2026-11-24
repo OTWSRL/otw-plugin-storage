@@ -37,7 +37,11 @@ export async function mediaUsage(db: Database): Promise<MediaUsage> {
     FROM (
       SELECT count(*) AS files, coalesce(sum(size), 0) AS bytes
       FROM (
-        SELECT DISTINCT entry.value ->> 'file' AS file, (entry.value ->> 'size')::bigint AS size
+        SELECT DISTINCT
+          entry.value ->> 'file' AS file,
+          -- A size that isn't a number counts as nothing, where a cast would fail the page.
+          CASE WHEN entry.value ->> 'size' ~ '^[0-9]{1,18}$'
+            THEN (entry.value ->> 'size')::bigint ELSE 0 END AS size
         FROM cms_media, jsonb_each(cms_media.sizes) AS entry
       ) AS distinct_files
     ) AS sized

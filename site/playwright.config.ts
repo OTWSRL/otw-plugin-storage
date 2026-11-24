@@ -40,6 +40,8 @@ export default defineConfig({
         DATABASE_URL: '',
         SITE_URL: SITE,
         // The stand-in's keys, from the environment as a real bucket's are.
+        // The stand-in is on this machine: the server says a storage on its own network is meant.
+        STORAGE_ALLOW_PRIVATE_ENDPOINT: '1',
         STORAGE_S3_ACCESS_KEY_ID: 'fake-access-key',
         STORAGE_S3_SECRET_ACCESS_KEY: 'fake-secret-key',
       },

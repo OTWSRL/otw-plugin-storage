@@ -8,7 +8,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { StorageConnection, StorageDriver } from '../src/index'
 import { DIRECT_FROM_BYTES } from '../src/index'
 import { startFakeS3, type FakeS3 } from './fake-s3'
-import { bootStorage, bucketEnv, bucketSettings, bytes } from './fixtures'
+import { bootStorage, bucketEnv, bucketSettings, bytes, privateEnv } from './fixtures'
 
 let s3: FakeS3
 beforeAll(async () => {
@@ -114,11 +114,31 @@ describe('switched on', () => {
         'notes.txt',
       ])
       expect(await keys()).toHaveLength(2)
+      // No name is left claimed once its file is written.
+      const claims = (await kernel.db.execute('SELECT key FROM storage_claims')) as never as {
+        rows: unknown[]
+      }
+      expect(claims.rows).toEqual([])
     },
   )
 
+  it('takes over a claim left by a server that stopped, once it has run out', async () => {
+    const { kernel } = await bootStorage({ settings: on(), env: bucketEnv })
+    const month = `${new Date().getUTCFullYear()}/${String(new Date().getUTCMonth() + 1).padStart(2, '0')}`
+    const claimed = `${s3.url}/media/${month}/notes.txt`
+    await kernel.db.execute(
+      `INSERT INTO storage_claims (key, expires_at) VALUES ('${claimed}', now() + interval '5 minutes')`,
+    )
+    // Being written, as far as anyone can tell: the upload takes the next name.
+    const waiting = await kernel.media.upload({ name: 'notes.txt', data: bytes('second') })
+    expect(waiting.file.endsWith('/notes-1.txt')).toBe(true)
+    await kernel.db.execute(`UPDATE storage_claims SET expires_at = now() - interval '1 minute'`)
+    const after = await kernel.media.upload({ name: 'notes.txt', data: bytes('first after all') })
+    expect(after.file.endsWith('/notes.txt')).toBe(true)
+  })
+
   it('fails each upload with what’s missing, and never falls back to the disk', async () => {
-    const { kernel, uploads } = await bootStorage({ settings: on() })
+    const { kernel, uploads } = await bootStorage({ settings: on(), env: privateEnv })
     expect(kernel.directUploads).toBeNull()
     await expect(kernel.media.upload({ name: 'notes.txt', data: bytes('x') })).rejects.toThrow(
       'The media storage isn’t ready: Set STORAGE_S3_ACCESS_KEY_ID and STORAGE_S3_SECRET_ACCESS_KEY in the site’s environment.',
@@ -178,6 +198,58 @@ describe('switched on', () => {
     // The file that waited is gone; only the upload and its sizes are left.
     expect(stored.some((key) => key.includes('_uploads/'))).toBe(false)
     expect((await kernel.media.list()).total).toBe(1)
+  })
+})
+
+describe('addresses inside the server’s own network', () => {
+  it('are never asked for anything unless the server itself allows them', async () => {
+    const fetched = vi.spyOn(globalThis, 'fetch')
+    const { kernel, act } = await bootStorage({
+      settings: on(),
+      env: { STORAGE_S3_ACCESS_KEY_ID: 'k', STORAGE_S3_SECRET_ACCESS_KEY: 's' },
+    })
+    const problem = kernel.service('storage').status().problem
+    expect(problem).toContain('That address is on the server’s own network.')
+    await expect(kernel.media.upload({ name: 'a.txt', data: bytes('x') })).rejects.toThrow(
+      'The media storage isn’t ready',
+    )
+    // Anyone may ask the site for /uploads/…: with the storage refused, nothing is fetched.
+    await expect(
+      kernel.serveUpload(
+        new Request(new URL('/uploads/v1/agent/self', TEST_ORIGIN)),
+        'v1/agent/self',
+      ),
+    ).rejects.toThrow('The media storage isn’t ready')
+    expect(outcome(kernel, await act('test-connection')).message).toContain(
+      'Finish the settings: That address is on the server’s own network.',
+    )
+    expect(fetched).not.toHaveBeenCalled()
+    fetched.mockRestore()
+  })
+
+  it('never reaches a cloud’s metadata address, even with private addresses allowed', async () => {
+    const fetched = vi.spyOn(globalThis, 'fetch')
+    const { kernel, act } = await bootStorage({
+      settings: {
+        ...on(),
+        'storage.s3_endpoint': 'http://169.254.169.254',
+        'storage.s3_bucket': 'latest',
+        'storage.prefix': 'meta-data/iam',
+      },
+      env: bucketEnv,
+    })
+    expect(kernel.service('storage').status().problem).toBe(
+      'That address isn’t a storage service’s.',
+    )
+    await expect(
+      kernel.serveUpload(
+        new Request(new URL('/uploads/security-credentials', TEST_ORIGIN)),
+        'security-credentials',
+      ),
+    ).rejects.toThrow('The media storage isn’t ready')
+    expect(outcome(kernel, await act('test-connection')).kind).toBe('error')
+    expect(fetched).not.toHaveBeenCalled()
+    fetched.mockRestore()
   })
 })
 
@@ -260,7 +332,7 @@ describe('testing the connection', () => {
   })
 
   it('says what’s missing before it tries anything, and wrong keys in the service’s word', async () => {
-    const unset = await bootStorage({ settings: bucketSettings(s3) })
+    const unset = await bootStorage({ settings: bucketSettings(s3), env: privateEnv })
     expect(outcome(unset.kernel, await unset.act('test-connection')).message).toContain(
       'Finish the settings: Set STORAGE_S3_ACCESS_KEY_ID',
     )
@@ -335,7 +407,7 @@ describe('copying the disk’s uploads across', () => {
   })
 
   it('won’t start without a storage that’s ready, and stops when cancelled', async () => {
-    const unset = await bootStorage({ settings: bucketSettings(s3) })
+    const unset = await bootStorage({ settings: bucketSettings(s3), env: privateEnv })
     const refused = outcome(unset.kernel, await unset.act('start-copy'))
     expect(refused.kind).toBe('error')
     expect(refused.message).toContain('The copy couldn’t start: Set STORAGE_S3_ACCESS_KEY_ID')
@@ -343,6 +415,12 @@ describe('copying the disk’s uploads across', () => {
     const { kernel, act } = await bootStorage({ settings: bucketSettings(s3), env: bucketEnv })
     await kernel.media.upload({ name: 'notes.txt', data: bytes('never copied') })
     await act('start-copy')
+    // Pressed twice: still one run.
+    await act('start-copy')
+    const runs = (await kernel.db.execute('SELECT status FROM storage_copy_runs')) as never as {
+      rows: unknown[]
+    }
+    expect(runs.rows).toEqual([{ status: 'running' }])
     expect(outcome(kernel, await act('cancel-copy')).message).toBe('The copy was cancelled.')
     await kernel.jobs.runDue()
     expect(await s3.objects()).toEqual([])

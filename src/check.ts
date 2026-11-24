@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { StorageConnection, StorageDriver } from './drivers'
-import { request, StorageError, type Fetch } from './http'
+import { readCapped, request, StorageError, type Fetch } from './http'
 
 /** One thing the connection test tried, and how it went. */
 export interface CheckResult {
@@ -21,8 +21,9 @@ function why(error: unknown): string {
   return error instanceof Error ? error.message : 'It failed; see the server’s log.'
 }
 
+/** A probe's bytes back as text: no more than the probe is long, whatever the storage sends. */
 async function textOf(body: ReadableStream<Uint8Array>): Promise<string> {
-  return new Response(body).text()
+  return readCapped(new Response(body), PROBE.byteLength + 1)
 }
 
 /**
@@ -143,7 +144,7 @@ export async function checkConnection(
   if (stored && address) {
     await tried('Serve a file at the public address', async () => {
       const served = await request(options.fetch, address, { method: 'GET', headers: {} })
-      const body = served.ok ? await served.text() : ''
+      const body = served.ok ? await readCapped(served, PROBE.byteLength + 1) : ''
       if (!served.ok) await served.body?.cancel()
       if (body !== new TextDecoder().decode(PROBE)) {
         fail(

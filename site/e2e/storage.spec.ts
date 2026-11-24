@@ -114,6 +114,8 @@ test('the settings show one service’s fields at a time, and its keys come from
   await expect(row(page, 'Storage')).toContainText('S3, ready')
   await expect(row(page, 'Uploads are kept')).toContainText('On the server’s disk')
   await expect(row(page, 'Files are served')).toContainText('Through this site, at /uploads/')
+  // The stand-in speaks plain http, which is said.
+  await expect(page.getByText('The storage’s address is plain http')).toBeVisible()
 })
 
 test('the connection test tries the bucket out, and says what’s wrong with it', async ({

@@ -1,7 +1,7 @@
 import type { StoredFile } from '@otwdesign/sdk'
 // Types only: the SDK itself is loaded when a store is first used.
 import type * as VercelBlob from '@vercel/blob'
-import { cleanPrefix } from './config'
+import { cleanPrefix, isSafeKey } from './config'
 import type { StorageConnection, StorageDriver } from './drivers'
 import { request, StorageError, type Fetch } from './http'
 
@@ -31,10 +31,13 @@ const WAITING_TYPE = 'application/octet-stream'
 /** A waiting file the site never read goes by itself after a day. */
 const WAITING_DAYS = 1
 
-/** The store's id, from the environment or the read-write token that carries it. */
+/**
+ * The store's id: the one in the read-write token when there is a token, since that's the store
+ * the SDK writes to; `BLOB_STORE_ID` only when signing in without one.
+ */
 export function blobStoreId(settings: Pick<BlobSettings, 'storeId' | 'token'>): string | null {
-  const given = settings.storeId?.trim().replace(/^store_/, '')
-  const found = given || /^vercel_blob_rw_([A-Za-z0-9]+)_/.exec(settings.token ?? '')?.[1]
+  const inToken = /^vercel_blob_rw_([A-Za-z0-9]+)_/.exec(settings.token ?? '')?.[1]
+  const found = settings.token ? inToken : settings.storeId?.trim().replace(/^store_/, '')
   return found && /^[A-Za-z0-9]+$/.test(found) ? found : null
 }
 
@@ -71,6 +74,8 @@ function slice(body: ReadableStream<Uint8Array>, start: number, end: number) {
         const to = Math.min(end + 1 - seen, chunk.byteLength)
         if (to > from) controller.enqueue(chunk.subarray(from, to))
         seen += chunk.byteLength
+        // Everything asked for is out: the rest of the file isn't downloaded for nothing.
+        if (seen > end) controller.terminate()
       },
     }),
   )
@@ -120,7 +125,10 @@ export function blobDriver(
         const { token, storeId } = settings()
         return token ? { token } : storeId ? { storeId } : {}
       }
-      const path = (key: string) => `${prefix() ?? ''}${key}`
+      const path = (key: string) => {
+        if (!isSafeKey(key)) throw new StorageError('rejected', 'That file’s name can’t be stored.')
+        return `${prefix() ?? ''}${key}`
+      }
 
       const stat = async (key: string) => {
         try {
@@ -162,8 +170,12 @@ export function blobDriver(
               method: 'GET',
               headers: headers ?? {},
             })
-            if (response.status === 404) return null
+            if (response.status === 404) {
+              await response.body?.cancel().catch(() => {})
+              return null
+            }
             if (!response.ok || !response.body) {
+              await response.body?.cancel().catch(() => {})
               throw new StorageError(
                 'rejected',
                 `Vercel Blob answered ${response.status} for a file.`,

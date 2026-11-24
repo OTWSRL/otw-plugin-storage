@@ -84,6 +84,8 @@ describe('a Vercel Blob store', () => {
   it('finds its id in the token, or in the environment', () => {
     expect(blobStoreId({ token: TOKEN, storeId: undefined })).toBe('AbC123xyz')
     expect(blobStoreId({ token: undefined, storeId: 'store_Zz9' })).toBe('Zz9')
+    // With both, the token's: it's the store the SDK writes to, so files are linked there too.
+    expect(blobStoreId({ token: TOKEN, storeId: 'store_Other1' })).toBe('AbC123xyz')
     expect(blobStoreId({ token: 'not-a-blob-token', storeId: undefined })).toBeNull()
   })
 
@@ -189,6 +191,37 @@ describe('files in the store', () => {
       options: { access: 'private', headers: { range: 'bytes=2-4' }, token: TOKEN },
     })
     expect(await connection.read('missing.txt')).toBeNull()
+  })
+
+  it('stops reading a file once the range asked for is out', async () => {
+    let sent = 0
+    const fake = fakeSdk()
+    ;(fake.sdk as { get: unknown }).get = async () => ({
+      statusCode: 200,
+      // A store that sends the whole file, a kilobyte at a time, for as long as it's read.
+      stream: new ReadableStream<Uint8Array>({
+        pull(controller) {
+          sent++
+          controller.enqueue(new Uint8Array(1024).fill(65))
+          if (sent > 500) controller.close()
+        },
+      }),
+      headers: new Headers(),
+      blob: { size: 500 * 1024, uploadedAt: new Date() },
+    })
+    const driver = blobDriver(() => settings({ access: 'private' }), { load: async () => fake.sdk })
+    const part = await (await driver.connect()).read('big.bin', { start: 0, end: 9 })
+    expect(await new Response(part!.body).text()).toBe('AAAAAAAAAA')
+    expect(sent).toBeLessThan(10)
+  })
+
+  it('refuses a name that could leave its folder', async () => {
+    const { connection, calls } = await connect({ prefix: 'site' })
+    await expect(connection.stat('../other/a.txt')).rejects.toMatchObject({ name: 'StorageError' })
+    await expect(connection.create('a?b', bytes('x'), 'text/plain')).rejects.toMatchObject({
+      name: 'StorageError',
+    })
+    expect(calls).toEqual([])
   })
 
   it('signs an address for one file of one size, as plain bytes, kept a day at most', async () => {

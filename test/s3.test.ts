@@ -30,9 +30,9 @@ function connect(changes: Partial<S3Config> = {}, now?: () => Date) {
   const locked: string[] = []
   const connection = s3Connection(config(changes), {
     fetch,
-    lock: async (key, fn) => {
+    claim: async (key, write) => {
       locked.push(key)
-      return fn()
+      return write()
     },
     ...(now ? { now } : {}),
   })
@@ -121,6 +121,45 @@ describe('never writing over a file', () => {
   })
 })
 
+describe('names that could climb out of the bucket', () => {
+  it('are refused before any request is made', async () => {
+    const seen: string[] = []
+    const connection = s3Connection(config({ prefix: 'site/' }), {
+      fetch: (async (url: string) => {
+        seen.push(url)
+        return new Response(null, { status: 200 })
+      }) as never,
+      claim: (_key, write) => write(),
+    })
+    for (const key of [
+      '../other/a.txt',
+      'a/%2e%2e/b.txt',
+      'a.txt?versionId=1',
+      'a.txt#x',
+      '.env',
+      '',
+    ]) {
+      await expect(connection.stat(key)).rejects.toMatchObject({ name: 'StorageError' })
+      await expect(connection.read(key)).rejects.toMatchObject({ name: 'StorageError' })
+      await expect(connection.delete(key)).rejects.toMatchObject({ name: 'StorageError' })
+      await expect(connection.create(key, bytes('x'), 'text/plain')).rejects.toMatchObject({
+        name: 'StorageError',
+      })
+    }
+    expect(seen).toEqual([])
+  })
+
+  it('treats a name another upload is writing this moment as taken', async () => {
+    await s3.control({ conditional: 'ignore' })
+    const connection = s3Connection(config({ noOverwrite: 'check' }), {
+      fetch,
+      claim: async () => false,
+    })
+    expect(await connection.create('photo.jpg', bytes('second'), 'image/jpeg')).toBe(false)
+    expect(await s3.objects()).toEqual([])
+  })
+})
+
 describe('what goes wrong', () => {
   it('says the keys are refused, with the service’s own word and nothing secret', async () => {
     const { connection } = connect({
@@ -156,7 +195,7 @@ describe('what goes wrong', () => {
         seen.push(init)
         return new Response(null, { status: 200, headers: { 'content-length': '0' } })
       }) as never,
-      lock: (_key, fn) => fn(),
+      claim: (_key, write) => write(),
     })
     await connection.stat('a.txt')
     expect(seen[0]).toMatchObject({ redirect: 'error', method: 'HEAD' })
