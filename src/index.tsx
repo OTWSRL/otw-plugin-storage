@@ -12,11 +12,13 @@ import { createCopyService, type CopyService } from './copy'
 import { chooseDriver, toMediaStorage, type StorageConnection, type StorageDriver } from './drivers'
 import { migrations, TABLES } from './migrations'
 import { s3Connection } from './s3'
+import { createUsageCounter, mediaUsage, parseLimit, type CountedUsage } from './usage'
 import { blobDriver } from './vercel-blob'
 
 export type { CheckResult } from './check'
 export type { StorageConnection, StorageDriver } from './drivers'
 export { StorageError } from './http'
+export type { MediaUsage } from './usage'
 
 /** Files this large, in bytes, go from the browser straight to storage: under Vercel's 4.5 MB. */
 export const DIRECT_FROM_BYTES = 4 * 1024 * 1024
@@ -44,6 +46,8 @@ declare module '@otwdesign/sdk' {
     'storage.cache': string
     /** A folder inside the bucket or store. */
     'storage.prefix': string
+    /** The plan's limit, in GB, to compare the space used with; empty for none. */
+    'storage.limit_gb': string
     /** `aws`, `r2`, `supabase` or `custom`. */
     'storage.s3_service': string
     /** The bucket's name. */
@@ -87,6 +91,20 @@ declare module '@otwdesign/sdk' {
 export interface StorageService {
   /** Whether the media library's files are kept in the storage, and by which driver. */
   status(): { active: boolean; driver: string | null; problem: string | null }
+  /**
+   * How much the media library holds, from its own records, and the limit set in Settings ›
+   * Storage, in bytes (`null` for none). It asks the database once and the storage nothing.
+   */
+  usage(): Promise<StorageUsage>
+}
+
+/**
+ * The space the media library uses, against the limit typed in the settings. `countedAt` is now
+ * for most libraries; a very large one is counted at most every five minutes.
+ */
+export interface StorageUsage extends CountedUsage {
+  /** The limit in bytes, or `null` when none is set or what's typed isn't a number. */
+  limitBytes: number | null
 }
 
 /** What the admin entry uses of the site entry's setup: one kernel's, found by its service. */
@@ -115,7 +133,7 @@ const service = (...services: S3Service[]) =>
 
 export default definePlugin({
   id: 'storage',
-  version: '1.0.1',
+  version: '1.1.0',
   name: 'Storage',
   description:
     'Keeps the media library’s files in object storage: S3, Cloudflare R2, Supabase Storage, a server of your own, or Vercel Blob.',
@@ -173,6 +191,14 @@ export default definePlugin({
       default: '',
       maxLength: 200,
       env: 'STORAGE_PREFIX',
+    },
+    'storage.limit_gb': {
+      type: 'text',
+      label: 'Storage limit, in GB',
+      description:
+        'Your plan’s limit, such as 5 or 0.5. The Status screen shows the space used against it. It doesn’t stop uploads; empty shows the space used alone.',
+      default: '',
+      maxLength: 12,
     },
     'storage.s3_service': {
       type: 'select',
@@ -373,7 +399,12 @@ export default definePlugin({
       handler: ({ run }) => copy.work(run),
     })
 
+    const countUsage = createUsageCounter(() => mediaUsage(cms.db))
     const storage: StorageService = {
+      async usage() {
+        const limit = parseLimit(setting('storage.limit_gb'))
+        return { ...(await countUsage()), limitBytes: limit === 'invalid' ? null : limit }
+      },
       status() {
         const chosen = driver()
         return {

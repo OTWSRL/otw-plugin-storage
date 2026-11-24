@@ -3,6 +3,7 @@ import { ActionError, defineAdmin } from '@otwdesign/sdk'
 import type { CheckResult } from './check'
 import storage, { internalsOf } from './index'
 import type { CopyRun } from './schema'
+import { formatSize, parseLimit, percentUsed, usageLevel, type MediaUsage } from './usage'
 
 const MANAGE = 'storage.manage'
 /** Where the last connection test's results wait for the Status screen. */
@@ -27,6 +28,16 @@ function when(date: Date | string): string {
   return new Date(date).toISOString().replace('T', ' ').slice(0, 16) + ' UTC'
 }
 
+/** The space the media library uses, in a sentence, against the limit when there is one. */
+export function describeUsage(usage: MediaUsage, limitBytes: number | null): string {
+  const files = `${usage.files} ${usage.files === 1 ? 'file' : 'files'}`
+  const items = `${usage.items} ${usage.items === 1 ? 'item' : 'items'}`
+  const used = formatSize(usage.bytes)
+  return limitBytes === null
+    ? `${used} in ${files} (${items})`
+    : `${used} of ${formatSize(limitBytes)} (${percentUsed(usage.bytes, limitBytes)}%), in ${files} (${items})`
+}
+
 /** A run of the copy, in a sentence. */
 export function describeRun(run: CopyRun): string {
   const counts = [
@@ -49,7 +60,8 @@ export function describeRun(run: CopyRun): string {
 }
 
 export default defineAdmin(storage, (cms) => {
-  const { driver, active, directFrom, copy, check } = internalsOf(cms.services.get('storage'))
+  const service = cms.services.get('storage')
+  const { driver, active, directFrom, copy, check } = internalsOf(service)
   const chosen = () => {
     const found = driver()
     return typeof found === 'string'
@@ -73,9 +85,27 @@ export default defineAdmin(storage, (cms) => {
       active: active(),
       directFrom: directFrom(),
       last: (await cms.cache.get<LastCheck>(LAST_CHECK, { durable: true })) ?? null,
+      usage: await service.usage(),
+      limitTyped: parseLimit(cms.settings.get('storage.limit_gb')),
     }),
-    component: ({ data: { state, active: on, directFrom: from, last } }) => (
+    component: ({ data: { state, active: on, directFrom: from, last, usage, limitTyped } }) => (
       <>
+        {usageLevel(usage.bytes, usage.limitBytes) === 'over' && (
+          <Notice type="error">
+            <p>
+              The media library is over its storage limit: {describeUsage(usage, usage.limitBytes)}.
+              Your provider may refuse new files.
+            </p>
+          </Notice>
+        )}
+        {usageLevel(usage.bytes, usage.limitBytes) === 'near' && (
+          <Notice type="warning">
+            <p>
+              The media library is close to its storage limit:{' '}
+              {describeUsage(usage, usage.limitBytes)}.
+            </p>
+          </Notice>
+        )}
         {on && state.problem && (
           <Notice type="error">
             <p>
@@ -100,6 +130,32 @@ export default defineAdmin(storage, (cms) => {
             {state.publicUrl
               ? `From its public address: ${state.publicUrl.replace(/…$/, '')}`
               : 'Through this site, at /uploads/'}
+          </FormField>
+          <FormField
+            label="Space used"
+            description={
+              [
+                'What the media library holds, by its own records.',
+                // A large library's count is kept a few minutes: say when it's not this moment's.
+                Date.now() - new Date(usage.countedAt).getTime() > 60_000
+                  ? `Counted ${when(usage.countedAt)}.`
+                  : '',
+                usage.uncountedOriginals > 0
+                  ? `Not counted: the untouched ${
+                      usage.uncountedOriginals === 1
+                        ? 'original of 1 large image'
+                        : `originals of ${usage.uncountedOriginals} large images`
+                    }.`
+                  : '',
+                limitTyped === 'invalid'
+                  ? 'The storage limit in Settings isn’t a number of GB, so it isn’t used.'
+                  : '',
+              ]
+                .filter(Boolean)
+                .join(' ') || undefined
+            }
+          >
+            {describeUsage(usage, usage.limitBytes)}
           </FormField>
           <FormField label="Uploads from the browser">
             {!state.direct || from === null
@@ -315,6 +371,6 @@ export default defineAdmin(storage, (cms) => {
     page: 'storage.settings',
     title: 'Files',
     order: 40,
-    fields: ['storage.prefix', 'storage.direct_uploads', 'storage.cache'],
+    fields: ['storage.prefix', 'storage.direct_uploads', 'storage.cache', 'storage.limit_gb'],
   })
 })

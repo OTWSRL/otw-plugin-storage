@@ -80,6 +80,18 @@ directly. Without one the bucket can stay private: the site serves `/uploads/…
 ranges, at the cost of a request to the bucket per file. Links to `/uploads/…` saved in content
 keep working either way.
 
+### Space used
+
+**Storage › Status** says how much the media library holds: the size of every upload and every
+image size made from one, from the CMS's own records, with no request to the bucket. Set **Storage
+limit, in GB** to your plan's quota and it shows the share used, warns from 90% and says when
+it's passed. It never stops an upload: your provider enforces its own limit.
+
+It counts this site's library, not the bucket: not files the library doesn't know (another site's,
+or an upload still waiting), and not the untouched originals the CMS keeps of images over 2560
+pixels, which it says when there are any. Object storage has no "free space" to ask for; a
+plan's real quota is in the provider's own console.
+
 ### A server of your own, or a PC
 
 Run something that speaks S3 on it (MinIO, Garage, or `rclone serve s3` over a folder), choose
@@ -120,6 +132,7 @@ cms.registries.get('storage.drivers').add({
 })
 
 cms.services.get('storage').status() // { active, driver, problem }
+await cms.services.get('storage').usage() // { items, files, bytes, limitBytes, … }
 ```
 
 `create()` must never write over a file: it answers `false` when the key is taken.

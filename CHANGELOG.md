@@ -1,5 +1,13 @@
 # @otwdesign/plugin-storage
 
+## 1.1.0
+
+### Minor Changes
+
+- The Status screen says how much the media library holds, from the CMS's own records, and
+  compares it with a limit you set (Storage limit, in GB): a warning from 90%, and a notice once
+  it's passed. `cms.services.get('storage').usage()` gives the same to other plugins.
+
 ## 1.0.1
 
 ### Patch Changes

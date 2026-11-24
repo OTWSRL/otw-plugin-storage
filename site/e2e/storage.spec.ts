@@ -209,6 +209,38 @@ test('switched on, large files go from the browser straight to the bucket', asyn
   expect((await page.request.get('/uploads/_uploads/anything')).status()).toBe(404)
 })
 
+test('the status says how much the library holds, against a limit when one is set', async ({
+  page,
+}) => {
+  await signIn(page)
+  await page.goto('/admin/storage')
+  // The pixel uploaded to the disk, the large notes and the second pixel: three items.
+  const used = row(page, 'Space used')
+  await expect(used).toContainText(/^Space used5(\.\d)? MB in \d+ files \(3 items\)/)
+  await expect(used).toContainText('What the media library holds, by its own records.')
+
+  const setLimit = async (value: string) => {
+    await page.goto('/admin/storage/settings')
+    await page.getByLabel('Storage limit, in GB').fill(value)
+    await page.getByRole('button', { name: 'Save Changes' }).click()
+    await notice(page, 'Settings saved.')
+    await page.goto('/admin/storage')
+  }
+  await setLimit('1')
+  await expect(used).toContainText(/5(\.\d)? MB of 1 GB \(\d%\), in \d+ files \(3 items\)/)
+  await expect(page.getByText('storage limit:')).toHaveCount(0)
+
+  // A limit the library has passed: about four megabytes.
+  await setLimit('0.004')
+  await expect(
+    page.getByText(/The media library is over its storage limit: 5(\.\d)? MB of/),
+  ).toBeVisible()
+  await setLimit('five')
+  await expect(used).toContainText('The storage limit in Settings isn’t a number of GB')
+  await setLimit('')
+  await expect(used).toContainText(/MB in \d+ files \(3 items\)/)
+})
+
 test('a bucket that won’t take the browser’s file says so, and nothing is left of it', async ({
   page,
 }) => {
